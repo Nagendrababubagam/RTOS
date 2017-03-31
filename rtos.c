@@ -1,8 +1,6 @@
-// RTOS Framework - Spring 2016
-// J Losh
+// RTOS
 
-// Student Name: Nagendra Babu Bagam
-// Mav Id: 1001243831
+// Author: Nagendra Babu Bagam
 // E-mail: nagendrababu.bagam@mavs.uta.edu
 
 //-----------------------------------------------------------------------------
@@ -24,17 +22,24 @@
 #include <stdbool.h>
 #include <string.h>
 #include "tm4c123gh6pm.h"
+ 
+/******************************* IMP POINTS **************************************/
+// Stack is created by using a Global variable
+// Stack pointer(SP) is made to point to specific location of global variable Stack to make it work as Real core Stack
+// Stack is Downgrowing and Predecrementing Stack
+/********************************************************************************/
 
 // REQUIRED: correct these bitbanding references for green and yellow LEDs (temporary to guarantee compilation)
-#define RED_LED      (*((volatile uint32_t *)(0x42000000 + (0x400073FC-0x40000000)*32 + 2*4))) //PD2
-#define ORANGE_LED   (*((volatile uint32_t *)(0x42000000 + (0x400243FC-0x40000000)*32 + 1*4))) //PE1
-#define GREEN_LED    (*((volatile uint32_t *)(0x42000000 + (0x400073FC-0x40000000)*32 + 3*4))) //PD3
-#define YELLOW_LED   (*((volatile uint32_t *)(0x42000000 + (0x400243FC-0x40000000)*32 + 2*4))) //PE2
-#define PB1			 (*((volatile uint32_t *)(0x42000000 + (0x400053FC-0x40000000)*32 + 1*4))) //PB1
-#define PB2			 (*((volatile uint32_t *)(0x42000000 + (0x400053FC-0x40000000)*32 + 0*4))) //PB0
-#define PB3			 (*((volatile uint32_t *)(0x42000000 + (0x400043FC-0x40000000)*32 + 6*4))) //PA6
-#define PB4			 (*((volatile uint32_t *)(0x42000000 + (0x400043FC-0x40000000)*32 + 7*4))) //PA7
-#define PI_PB		 (*((volatile uint32_t *)(0x42000000 + (0x400253FC-0x40000000)*32 + 4*4))) //PF4
+#define RED_LED      	(*((volatile uint32_t *)(0x42000000 + (0x400073FC-0x40000000)*32 + 2*4))) //PD2
+#define ORANGE_LED   	(*((volatile uint32_t *)(0x42000000 + (0x400243FC-0x40000000)*32 + 1*4))) //PE1
+#define GREEN_LED    	(*((volatile uint32_t *)(0x42000000 + (0x400073FC-0x40000000)*32 + 3*4))) //PD3
+#define YELLOW_LED   	(*((volatile uint32_t *)(0x42000000 + (0x400243FC-0x40000000)*32 + 2*4))) //PE2
+#define PB1	     	(*((volatile uint32_t *)(0x42000000 + (0x400053FC-0x40000000)*32 + 1*4))) //PB1
+#define PB2		(*((volatile uint32_t *)(0x42000000 + (0x400053FC-0x40000000)*32 + 0*4))) //PB0
+#define PB3		(*((volatile uint32_t *)(0x42000000 + (0x400043FC-0x40000000)*32 + 6*4))) //PA6
+#define PB4		(*((volatile uint32_t *)(0x42000000 + (0x400043FC-0x40000000)*32 + 7*4))) //PA7
+// Pushbutton to enable Priority Inheritance
+#define PI_PB		(*((volatile uint32_t *)(0x42000000 + (0x400253FC-0x40000000)*32 + 4*4))) //PF4
 
 //-----------------------------------------------------------------------------
 // RTOS Defines and Kernel Variables
@@ -54,45 +59,60 @@ void intTostring(int value,char *str);
 #define STATE_READY      1 // ready to run
 #define STATE_BLOCKED    2 // has run, but now blocked by semaphore
 #define STATE_DELAYED    3 // has run, but now awaiting timer
-
-// semaphore structure Details
+// Maximum size of Queue to put processes waiting for Semaphore 
 #define MAX_QUEUE_SIZE 10
+// semaphore structure Details (Counting Semaphore)
 struct semaphore
 {
+	// Count of the semaphore
 	unsigned int count;
+	// Current queuesize (no.of Processes waiting in queue)
 	unsigned int queueSize;
-	unsigned int processQueue[MAX_QUEUE_SIZE]; // store task index here
+	// Circular queue to store processes waiting for semaphore
+	unsigned int processQueue[MAX_QUEUE_SIZE]; // store task index(Pid) here
+	// name of the semaphore (Just to show at the time of IPCS)
 	char name[15];
+	// Read and write Indexes from the processQueue to make it circular queue
 	unsigned int readIndex;
 	unsigned int writeIndex;
+	// current user of semaphore at the current instance (PID of process)
 	uint8_t currentUser;
 } *s, keyPressed, keyReleased, flashReq, pInheritance;
 
-#define MAX_TASKS 10       // maximum number of valid tasks
-uint8_t taskCurrent = 0xFF;// index of last dispatched task
-uint8_t taskCount = 0;     // total number of valid tasks
+// maximum number of valid tasks
+#define MAX_TASKS 10       
+// index of last dispatched task
+uint8_t taskCurrent = 0xFF;
+// total number of valid tasks
+uint8_t taskCount = 0;     
+// stTime and endTime to store the process execution time of ech task
 uint32_t stTime = 39999;
 uint32_t endTime = 0;
+// CpuTimeout to acknowledge caluculation of processor Usage calculation
 int cpuTimeout = 1000;
-bool PI = false;			// PrirotyInheritance Selector
+// PrirotyInheritance Selector
+bool PI = false;		
+// Variable to count how many times the timer overflowed in a particular process execution
 int zeros=0;
+// Newpriority to be used in Priority Inheritance
 uint8_t newPriority = 0xFF;
 // TaskBlock Structure
 struct _tcb
 {
-	uint8_t state;                 // see STATE values above
-	void *pid;                     // used to uniquely identify process
-	void *sp;                      // location of stack pointer for process
-	uint8_t priority;              // 0=highest, 7=lowest
-	uint8_t currentPriority;       // used for priority inheritance
-	uint8_t skipcount;			   // Skipcount for scheduling task
-	uint32_t ticks;                // ticks until sleep complete
-	char name[15];				   // Name of the task
-	int cpuUsage;				   // CPU Usage by This task
-	uint32_t cputime;			   // CPU time used for this task
-	struct semaphore *current;	   // Semaphore used currently by this task.
+	uint8_t state;                 	// Current state of the Task/Process (see STATE values above)
+	void *pid;                     	// Process ID used to uniquely identify process(In this project address of process)
+	void *sp;                      	// location of stack pointer for the process
+	uint8_t priority;              	// 0=highest, 7=lowest
+	uint8_t currentPriority;       	// used for priority inheritance
+	uint8_t skipcount;	    	// Skipcount for scheduling task; Allowing the task to skip max of skipcount times
+	uint32_t ticks;                	// ticks until sleep complete (in ms)
+	char name[15];			// Name of the task
+	int cpuUsage;			// CPU Usage by This task (%)
+	uint32_t cputime;		// CPU time used for this task (In ms out of a Sec)
+	struct semaphore *current;	// Semaphore used currently by this task if any
 } tcb[MAX_TASKS];
 
+// Created a stack of maxtasks*256 allwing each task to have 256*4 bytes of memory
 uint32_t stack[MAX_TASKS][256];
 
 //-----------------------------------------------------------------------------
@@ -109,23 +129,25 @@ void init(void* p, int count,char *name)
 	s->currentUser = 0xFF;
 	strcpy(s->name,name);
 }
+
 // Initializing RTOS tasks
 void rtosInit()
 {
 	uint8_t i;
-	taskCount = 0;				// No tasks Running
+	// No tasks Running or Created (At start of program i.e @ Bootup)
+	taskCount = 0;				
 	// clear out all tcb records
 	for (i = 0; i < MAX_TASKS; i++)
 	{
 		tcb[i].state = STATE_INVALID;
 		tcb[i].pid = 0;
 	}
-	// systick for 1ms system timer
+	// systick for 1ms system timer to be used for process time calculation
 	NVIC_ST_CTRL_R |= NVIC_ST_CTRL_CLK_SRC | NVIC_ST_CTRL_INTEN;
 	NVIC_ST_RELOAD_R = 39999;
 	NVIC_ST_CURRENT_R = 1;
 }
-// RTOS schedular to dispatch next task.
+// RTOS schedular to dispatch next task based on Priority
 int rtosScheduler()
 {
 	bool ok;
@@ -157,14 +179,14 @@ int rtosScheduler()
 		tDiff =  stTime - endTime;
   	else
   		tDiff = (39999-endTime) + stTime + (zeros-1)*39999;
-    tcb[prevTask].cputime += tDiff;
-    zeros = 0;
+    	tcb[prevTask].cputime += tDiff;
+    	zeros = 0;
   	stTime = (int)NVIC_ST_CURRENT_R;
 	return task;
 }
-// Start the RTOS by strating first task.
+// Start the RTOS by strating first task. Generally will be IDLE Process
 void rtosStart()
-{
+{ 
 	NVIC_ST_CTRL_R |= NVIC_ST_CTRL_ENABLE;
 	// call the first task to be run, restoring the preloaded context
 	taskCurrent = rtosScheduler();
@@ -194,7 +216,11 @@ bool createProcess(_fn fn, int priority,char *name)
 			i = 0;
 			while (tcb[i].state != STATE_INVALID) {i++;}
 			// Task Initialization
+			 
 			tcb[i].pid = fn;
+			// Making stack looks like,the task been already executed for uniformity in the next task switch
+			// Starting at location 1 registers and values are pushed in the order  _fn,R4-R11 and pointing 
+			// SP of this task to that specific location
 			tcb[i].sp = &stack[i][243];
 			stack[i][251] = (int)fn;
 			tcb[i].priority = priority;
@@ -215,9 +241,9 @@ bool createProcess(_fn fn, int priority,char *name)
 // To update the stackpointer to given value
 void update_SP(void* sp)
 {
-	__asm(" ADD R13,#8");	// To eliminate SP-8 Effect
+	__asm(" ADD R13,#8");	// To eliminate SP-8 Effect while calling this fn 
 	__asm(" MOV R13,R0");
-	__asm(" SUB R13,#8");	// To eliminate SP+8 Effect
+	__asm(" SUB R13,#8");	// To eliminate SP+8 Effect while leaving this fn
 }
 // To get current SP value
 void* get_SP()
@@ -228,7 +254,7 @@ void* get_SP()
 // Yield proceesor for other Tasks
 void yield()
 {
-	__asm(" ADD R13,#8 ");
+	__asm(" ADD R13,#8 ");	// To eliminate SP-8 Effect while calling this fn 
 	__asm(" PUSH {R14} ");
 	__asm(" PUSH {R4-R11} ");
 	tcb[taskCurrent].sp =get_SP();
@@ -241,7 +267,7 @@ void yield()
 void sleep(uint32_t tick)
 {
 	tcb[taskCurrent].ticks = tick;
-	__asm(" ADD R13,#8 ");
+	__asm(" ADD R13,#8 ");	// To eliminate SP-8 Effect while calling this fn 
 	__asm(" PUSH {R14} ");
 	__asm(" PUSH {R4-R11} ");
 	tcb[taskCurrent].sp =get_SP();
@@ -255,7 +281,7 @@ void sleep(uint32_t tick)
 void wait(void* pSemaphore)
 {
 	s = pSemaphore;
-	__asm(" ADD R13,#16 ");
+	__asm(" ADD R13,#16 ");	// To eliminate SP-16 Effect while calling this fn 
 	__asm(" PUSH {R14} ");
 	__asm(" PUSH {R4-R11} ");
 	tcb[taskCurrent].sp = get_SP();
@@ -499,41 +525,41 @@ void intTostring(int value,char *str)
 	int i=0;
 	bool isNegative=false;
 	char res[5];
-    int len = 0;
-    if(num==0)
-    {
-    	*str='0';
-    	str++;
+   	int len = 0;
+    	if(num==0)
+    	{
+    		*str='0';
+    		str++;
+    		*str='\0';
+    		return;
+    	}
+    	if(num<0)
+    	{
+    		isNegative=true;
+    		num=0-num;
+    	}
+    	for(; num > 0; ++len)
+    	{
+       		res[len] = num%10+'0';
+       		num/=10;
+    	}
+    	if(isNegative)
+    	{
+    		res[len]='-';
+    		len=len+1;
+    	}
+    	res[len] = 0; //null-terminating
+    	//now we need to reverse res
+    	for(i = 0; i < len/2; ++i)
+    	{
+        	char c = res[i]; res[i] = res[len-i-1]; res[len-i-1] = c;
+    	}
+    	for(i=0;i<len;i++)
+    	{
+    		*str=res[i];
+    		str++;
+    	}
     	*str='\0';
-    	return;
-    }
-    if(num<0)
-    {
-    	isNegative=true;
-    	num=0-num;
-    }
-    for(; num > 0; ++len)
-    {
-       res[len] = num%10+'0';
-       num/=10;
-    }
-    if(isNegative)
-    {
-    	res[len]='-';
-    	len=len+1;
-    }
-    res[len] = 0; //null-terminating
-    //now we need to reverse res
-    for(i = 0; i < len/2; ++i)
-    {
-        char c = res[i]; res[i] = res[len-i-1]; res[len-i-1] = c;
-    }
-    for(i=0;i<len;i++)
-    {
-    	*str=res[i];
-    	str++;
-    }
-    *str='\0';
 }
 
 // ------------------------------------------------------------------------------
@@ -622,7 +648,7 @@ void readKeys()
     if ((buttons & 8) != 0)
     {
       destroyProcess(flash4Hz);
-	}
+    }
     yield();
   }
 }
@@ -687,6 +713,14 @@ void PI_lowPri()
 	}
 }
 // Shell process to accept commands from user and execute them.
+// This will be used to trace process execution Status
+// Commands Supported are:
+//		ps	: Process Status
+//		ipcs	: smaphore Status
+//		Kill	: To kill the Process
+//		pidof	: Pid of a Task
+//		reboot	: To reboot the processor
+// 		&"Pname": to create a process by name "Pname" if valid
 void shell()
 {
 	char command[20] = {0};
